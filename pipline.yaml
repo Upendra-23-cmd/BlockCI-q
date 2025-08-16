@@ -1,0 +1,17 @@
+agent: "ubuntu-latest"
+
+stages:
+  - name: "Build"
+    steps:
+      - name: "Compile"
+        run: "echo Building..."
+
+  - name: "Test"
+    steps:
+      - name: "Unit Test"
+        run: "echo Running tests..."
+
+  - name: "Deploy"
+    steps:
+      - name: "Deploy to server"
+        run: "echo Deploying..."
