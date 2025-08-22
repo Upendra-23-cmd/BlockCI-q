@@ -1,6 +1,7 @@
 package core
 
 import (
+	"blockci-q/internal/storage"
 	"fmt"
 	"time"
 )
@@ -9,6 +10,7 @@ import (
 type Runner struct {
 	Scheduler *Scheduler
 	Executor  *Executor
+	LogStorage *storage.LogStorage
 }
 
 
@@ -16,6 +18,7 @@ func NewRunner() *Runner {
 	return &Runner{
 		Scheduler: NewScheduler(),
 		Executor: NewExecutor(),
+		LogStorage: storage.NewLogStorage("./logs"), // logs directory
 	}
 }
 
@@ -32,6 +35,15 @@ func (r *Runner) RunPipeline(pipeline *Pipeline) error {
 
 			output, err := r.Executor.RunStep(step, 5*time.Minute)
 			fmt.Println("Output: \n", output)
+
+			// Save log
+			logPath ,logErr := r.LogStorage.SaveLog(stage.Name, step.Run, output)
+			if logErr != nil {
+				fmt.Printf("Failedto save logs: %v\n", logErr)
+			} else {
+				fmt.Printf("Log saved at : %s\n", logPath)
+			}
+
 
 			if err != nil {
 				fmt.Printf("Step failed : %v\n", err)
