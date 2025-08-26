@@ -1,26 +1,40 @@
 package core
 
 import (
+	"blockci-q/internal/blockchain"
 	"blockci-q/internal/storage"
+	"blockci-q/pkg/utils"
 	"fmt"
 	"time"
 )
 
-// Runner ties together Parser + Scheduler + Executor
+// Runner ties together Parser + Scheduler + Executor + storage + blockchain
 type Runner struct {
 	Scheduler *Scheduler
 	Executor  *Executor
 	LogStorage *storage.LogStorage
+	Ledger     *blockchain.Ledger
+	AgentID		string // optional: identify which agent executed the step
 }
 
 
 func NewRunner() *Runner {
+
+	// Initialize blockchain ledger (append only file)
+	ledger, err := blockchain.OpenLedger("./ledger.json")
+	if err != nil {
+		// fail-open : you can choose to return error instead
+		fmt.Printf("WARN : cannot open ledger: %v\n", err)
+	}
 	return &Runner{
 		Scheduler: NewScheduler(),
 		Executor: NewExecutor(),
 		LogStorage: storage.NewLogStorage("./logs"), // logs directory
+		Ledger: ledger,
+		AgentID: "local-agent",  // replace if you have dynamic ids
 	}
 }
+
 
 // RunPipeline executes all stages sequentally
 func (r *Runner) RunPipeline(pipeline *Pipeline) error {
@@ -43,7 +57,26 @@ func (r *Runner) RunPipeline(pipeline *Pipeline) error {
 			} else {
 				fmt.Printf("Log saved at : %s\n", logPath)
 			}
+			// Append blockchain blocks (best-effort ; do not block pipeline if ledger missing)
+			if r.Ledger != nil && logErr == nil {
 
+
+				logHash, hErr := utils.HashFile(logPath)
+				if hErr != nil {
+					fmt.Printf("WARN : cannot hash log : %v\n",hErr)
+				}else {
+					prev := r.Ledger.LastHash()
+					idx := r.Ledger.NextIndex()
+						blk , bErr := blockchain.NewBlock(idx,stage.Name,step.Run,logPath,logHash,prev,r.AgentID)
+						if bErr != nil{
+							fmt.Printf("WARN : cannot create block : %v\n",bErr)
+						} else if aErr := r.Ledger.AppendBlocks(blk); aErr != nil {
+							fmt.Printf("WARN : cannot append block : %v\n",aErr)
+						}else{
+							fmt.Printf("Ledger : appended blocks %d (hash=%s)\n",blk.Index,blk.Hash[:16])
+						}			
+				}
+			}
 
 			if err != nil {
 				fmt.Printf("Step failed : %v\n", err)
@@ -53,6 +86,14 @@ func (r *Runner) RunPipeline(pipeline *Pipeline) error {
 		}
 	}
 
+	// Optional : verify the chain ath the end (cost some time on big ledgers)
+	if r.Ledger != nil {
+		if err := r.Ledger.VerifyChain(); err != nil {
+			fmt.Printf("Ledger verification FAILED: %v\n", err)
+		}else{
+			fmt.Println("Ledger verification : ok")
+		}
+	}
 	fmt.Println("\nPipeline finshed successfully ")
 	return  nil
 }
