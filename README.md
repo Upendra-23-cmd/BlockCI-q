@@ -137,3 +137,49 @@ blockci-q/
 
 -------------------------------------------------------------------------------------
 
+                ┌───────────────────────────┐
+                │       pipeline.yaml        │
+                │  (user-defined workflow)   │
+                └──────────────▲────────────┘
+                               │ Parse
+                               │
+        ┌───────────────┐   ┌───────────────┐
+        │   Parser       │   │   Scheduler   │
+        │ (parser.go)    │   │ (schedular.go)│
+        └───────▲────────┘   └───────▲──────┘
+                │ Pipeline Struct    │ Steps
+                │                    │
+           ┌────┴────────┐     ┌─────┴──────────┐
+           │   Runner    │────▶│   Executor     │
+           │ (runner.go) │     │ (executor.go)  │
+           └─────▲───────┘     └─────▲─────────┘
+                 │ Logs + Hash        │ Output
+                 │
+        ┌────────┴─────────┐
+        │   Log Storage     │
+        │ (storage/logs)    │
+        └────────▲──────────┘
+                 │ LogHash
+                 │
+      ┌──────────┴────────────────────────────────┐
+      │              Blockchain Ledger             │
+      │               (ledger.go)                  │
+      │────────────────────────────────────────────│
+      │ Block:                                     │
+      │   • Index / Timestamp                      │
+      │   • Stage / Step                           │
+      │   • LogPath / LogHash                      │
+      │   • PrevHash → Chain linking               │
+      │   • Hash (SHA256)                          │
+      │   • AgentID                                │
+      │   • Signature (Ed25519, private key)       │
+      │   • PubKey (for verification)              │
+      └────────────────────────────────────────────┘
+                 │ VerifyChain()
+                 ▼
+        ┌───────────────────────────┐
+        │ Security Layer             │
+        │ (signing.go - Ed25519)     │
+        │   • Keypair Management     │
+        │   • Sign / Verify          │
+        └───────────────────────────┘

@@ -1,0 +1,5 @@
+# Server trusted agents map
+agents:
+  agent-1:
+    pubkey: "7JgJK03vNMvYPxgSXqDnpaszSfy4iqAFgOuA/NJfJ28="
+# Add more agents as they register

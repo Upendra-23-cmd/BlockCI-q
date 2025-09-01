@@ -2,6 +2,7 @@ package tests
 
 import (
 	"blockci-q/internal/blockchain"
+	"blockci-q/internal/security"
 	"blockci-q/pkg/utils"
 	"os"
 	"path/filepath"
@@ -42,7 +43,7 @@ func TestNewBlockAndHash(t *testing.T) {
 	}
 }
 
-// ✅ Test appending multiple blocks to the ledger
+// ✅ Test appending multiple blocks to the ledger with signing
 func TestLedgerAppendAndVerify(t *testing.T) {
 	tmpFile := filepath.Join(t.TempDir(), "ledger.jsonl")
 	ledger, err := blockchain.OpenLedger(tmpFile)
@@ -50,12 +51,15 @@ func TestLedgerAppendAndVerify(t *testing.T) {
 		t.Fatalf("failed to open ledger: %v", err)
 	}
 
+	// generate keys
+	pub, priv, _ := security.GenerateKeyPair()
+
 	// create first log
 	log1 := createTempLog(t, "step1 output")
 	h1, _ := utils.HashFile(log1)
 	b1, _ := blockchain.NewBlock(0, "Build", "go build", log1, h1, "", "agent1")
 
-	if err := ledger.AppendBlocks(b1); err != nil {
+	if err := ledger.AppendBlocks(b1, priv, pub); err != nil {
 		t.Fatalf("failed to append block1: %v", err)
 	}
 
@@ -64,7 +68,7 @@ func TestLedgerAppendAndVerify(t *testing.T) {
 	h2, _ := utils.HashFile(log2)
 	b2, _ := blockchain.NewBlock(1, "Test", "go test ./...", log2, h2, b1.Hash, "agent1")
 
-	if err := ledger.AppendBlocks(b2); err != nil {
+	if err := ledger.AppendBlocks(b2, priv, pub); err != nil {
 		t.Fatalf("failed to append block2: %v", err)
 	}
 
@@ -79,12 +83,14 @@ func TestTamperingDetection(t *testing.T) {
 	tmpFile := filepath.Join(t.TempDir(), "ledger.jsonl")
 	ledger, _ := blockchain.OpenLedger(tmpFile)
 
+	pub, priv, _ := security.GenerateKeyPair()
+
 	// create log
 	log := createTempLog(t, "secure log")
 	h, _ := utils.HashFile(log)
 	b, _ := blockchain.NewBlock(0, "Deploy", "echo deploy", log, h, "", "agentX")
 
-	if err := ledger.AppendBlocks(b); err != nil {
+	if err := ledger.AppendBlocks(b, priv, pub); err != nil {
 		t.Fatalf("append failed: %v", err)
 	}
 
@@ -102,10 +108,12 @@ func TestLedgerPersistence(t *testing.T) {
 	tmpFile := filepath.Join(t.TempDir(), "ledger.jsonl")
 	ledger, _ := blockchain.OpenLedger(tmpFile)
 
+	pub, priv, _ := security.GenerateKeyPair()
+
 	log := createTempLog(t, "persisted log")
 	h, _ := utils.HashFile(log)
 	b, _ := blockchain.NewBlock(0, "Build", "go build", log, h, "", "agentY")
-	_ = ledger.AppendBlocks(b)
+	_ = ledger.AppendBlocks(b, priv, pub)
 
 	// reopen ledger
 	ledger2, err := blockchain.OpenLedger(tmpFile)

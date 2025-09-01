@@ -18,7 +18,9 @@ type Block struct {
 	LogHash   string `json:"logHash"`  // sha256 of the log file content
 	PrevHash  string `json:"prevHash"` // hash of previous block
 	Hash      string `json:"hash"`     // sha256 over the block's canconial data
-	AgentID   string `json:"agentId,omitempty"`
+	AgentID   string `json:"agentId"`
+	Signature string `json:"signature"`
+	PubKey    string `json:"pubKey"`
 }
 
 // canconical Data return the JSON used to compute the blockchain hash(excluding hash field)

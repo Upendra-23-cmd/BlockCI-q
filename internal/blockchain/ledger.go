@@ -1,7 +1,10 @@
 package blockchain
 
 import (
+	"blockci-q/internal/security"
 	"bufio"
+	"crypto/ed25519"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -71,9 +74,23 @@ func (l*Ledger) NextIndex() int {
 }
 
 // AppendBlocks append a block to memory and file (append-only)
-func (l *Ledger) AppendBlocks(b *Block) error {
+func (l *Ledger) AppendBlocks(b *Block , privkey ed25519.PrivateKey, pubKey ed25519.PublicKey) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+
+	h, err := b.ComputeHash()
+	if err  != nil {
+		return fmt.Errorf("cannot recompute hash: %w", err)
+	}
+	b.Hash =h 
+
+	canon, err := b.canonicalData()
+	if err != nil {
+		return fmt.Errorf("cannot get canonical data : %w",err)
+	}
+	b.Signature = security.SignData(privkey, canon)
+	b.PubKey = hex.EncodeToString(pubKey)
+
 
 	//basic link check
 	if len(l.blocks) > 0 && b.PrevHash != l.blocks[len(l.blocks)-1].Hash {
@@ -105,7 +122,7 @@ func (l *Ledger) Blocks() []*Block {
 
 	out := make([]*Block, 0, len(l.blocks))
 
-    for _, b := range l.blocks {
+    for _, b:= range l.blocks {
         out = append(out, b) // append pointer, not value
     }
 	return out
