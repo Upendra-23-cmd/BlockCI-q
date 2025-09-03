@@ -1,57 +1,94 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
-	"log"
+	"io"
 	"net/http"
-	"os/exec"
+	"os"
+	"time"
 )
 
-type JobRequest struct {
-	Stage string `json:"stage"`
-	Step  string `json:"step"`
-	Cmd   string `json:"cmd"`
+type Agent struct {
+	ID     string  `json:"id"`
+	Host string		`json:"host"`
 }
 
-type JobResponse struct {
-	Stage   string `json:"stage"`
-	Step    string `json:"step"`
-	Success string `json:"sucess"`
-	Output  string `json:"output"`
-}
 
 func main() {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/run", handleRunJob)
+	serverURL := "http://localhost:8080"
+	agentID  := "agent-1"
 
-	fmt.Println("Agent Running on http://localhost:9090 ")
-	log.Fatal(http.ListenAndServe(":9090", mux))
-}
-
-func handleRunJob(w http.ResponseWriter, r *http.Request) {
-	var job JobRequest
-	if err := json.NewDecoder(r.Body).Decode(&job); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
+	if err := registeragent(serverURL, agentID);err != nil {
+		fmt.Println("X",err)
+		os.Exit(1)
 	}
 
-	fmt.Printf("Agent running job %s - %s\n", job.Stage, job.Step)
+	fmt.Println("Agent started , polling for jobs")
+	PollJobs(serverURL,agentID)
+}
 
-	//Execute command
-	cmd := exec.Command("sh", "-c", job.Cmd)
-	output, err := cmd.CombinedOutput()
-	status := "Success"
+
+
+func registeragent(serverURL, id string)error{
+
+	agent := Agent{ID: id, Host: "local host"}
+	data, _ := json.Marshal(agent)
+
+	resp, err := http.Post(serverURL+"/agent/register","application/json", bytes.NewBuffer(data))
 	if err != nil {
-		status = "Error"
+		return fmt.Errorf("failed to register agent : %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK{
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("register failed: %s", string(body))
 	}
 
-	resp := JobResponse{
-		Stage:   job.Stage,
-		Step:    job.Step,
-		Success: status,
-		Output:  string(output),
-	}
-
-	_ = json.NewEncoder(w).Encode(resp)
+	fmt.Println("Agent registered :", id)
+	return nil
 }
+
+func PollJobs(serverURL, id string){
+
+	for{
+		resp, err := http.Get(fmt.Sprintf("%s/agents/%s/jobs/next", serverURL, id))
+		if err != nil {
+			fmt.Println("poll error: ", err)
+			time.Sleep(5*time.Second)
+			continue
+		}
+		
+
+		if resp.StatusCode == http.StatusNoContent {
+			time.Sleep(3*time.Second)
+			continue
+		}
+
+		var job map[string]interface{}
+		if err := json.NewDecoder(resp.Body).Decode(&job); err != nil {
+			fmt.Println("Decode job error", err)
+			resp.Body.Close()
+			continue
+		}
+		resp.Body.Close()
+
+		fmt.Println("Received job: ",job)
+
+		// run fake execution 
+		result := map[string]interface{}{
+			"jobID": job["id"],
+			"agent" : id,
+			"output": "simulated success",
+			"status": "done",
+			"time"  : time.Now().Format(time.RFC3339),
+		}
+
+		data, _ := json.Marshal(result)
+		http.Post(serverURL+"/jobs/result","application/json",bytes.NewBuffer(data))
+	}
+}
+
+
