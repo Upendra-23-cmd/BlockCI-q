@@ -1,185 +1,188 @@
-🚀 What is BlockCI-Q?
+🚀 BlockCI-Q
 
-BlockCI-Q is a next-generation CI/CD (Continuous Integration & Continuous Deployment) engine, built in Go, that combines:
-
-1.) High-performance concurrency (Go worker pools)
-
-2.) Immutable blockchain-style ledger (for verifiable builds & logs)
-
-3.) Future-ready security (Zero-Trust, SPIFFE, OPA, Post-Quantum cryptography)
-
-4.) Quantum-inspired optimizations (for scheduling & test prioritization in later versions)
-
-It’s designed to be a secure, transparent, and enterprise-grade alternative to Jenkins, GitHub Actions, or GitLab CI, while solving supply chain security and auditability challenges that existing tools struggle with.
-
-
----------------------------------------------------------------------------------------------------------------------------
-
-
-💡 Idea Behind Developing It :-
-
-Traditional CI/CD tools like Jenkins or GitHub Actions are powerful, but they face challenges:
-
-1. Security → Secrets, credentials, and pipelines are often vulnerable.
-
-2. Auditability → Build logs and artifacts can be tampered with, making compliance difficult.
-
-3. Transparency → Enterprises need verifiable proof that a build/deploy wasn’t manipulated.
-
-4. Future Threats → Quantum computing will eventually break today’s cryptography.
-
-👉 BlockCI-Q was designed to fix these by merging DevOps + Blockchain + Quantum security.
-
-
-----------------------------------------------------------------------------------------------------------------------------
-
-🎯 Use of BlockCI-Q
-
-BlockCI-Q is useful for:
-
-1. Enterprises → that need compliance (GDPR, SOC 2, ISO) with tamper-proof CI/CD logs.
-
-2. Startups → that want faster, secure pipelines out of the box.
-
-3. Security-sensitive industries → finance, healthcare, government, defense.
-
-4. Developers → as a transparent, verifiable build system.
-
-Example:
-A fintech company can prove to auditors that every build/deploy was immutable, verified, and executed under strict policies — without relying on trust in Jenkins servers.
-
--------------------------------------------------------------------------------------------------------------------------------
-
-✅ Advantages :-
-
-1. Immutable Build History → Every build result stored in a blockchain-like ledger.
-
-2. Zero-Trust Security → Later versions will eliminate long-lived secrets using SPIFFE + OPA.
-
-3. Future-Proof → Post-Quantum cryptography support (Kyber, Dilithium).
-
-4. Performance → Built in Go → lightweight binaries, high concurrency, faster pipelines.
-
-5. Transparency → Developers, managers, auditors can independently verify builds.
-
-6. Differentiator → Unlike Jenkins/GitHub, it offers verifiable cryptographic proof of CI/CD.
-
-7. Portfolio Power → Demonstrates expertise in Go, DevOps, Blockchain, Security.
+Blockchain + Quantum-Inspired CI/CD Engine
 
 
 
 
-❌ Disadvantages / Challenges
-
-1. Complexity → Many moving parts (Go, Blockchain, SPIFFE, OPA, Quantum).
-
-2. Development Time → A full version with all features takes months.
-
-3. Adoption Resistance → Companies already invested in Jenkins/GitHub.
-
-4. Performance Trade-off → Immutable signing may slightly slow pipelines.
-
-5. Resource Needs → Blockchain nodes, quantum simulators, secure infra.
-
-6. Maintenance → Post-quantum cryptography evolves rapidly → updates required.
 
 
+📌 Overview
 
--------------------------MY FILE STRUCTURE FOR THE PROJECT----------------------------
+BlockCI-Q is a next-generation CI/CD system designed for a world where immutability, transparency, and trust matter as much as speed.
+Unlike traditional CI/CD tools (Jenkins, GitHub Actions, GitLab CI), BlockCI-Q:
 
+🔒 Uses a blockchain ledger to make pipelines tamper-proof.
+
+✍️ Cryptographically signs logs per agent using Ed25519.
+
+📡 Follows a Server–Agent architecture (agents execute jobs, server dispatches).
+
+⚡ Provides a CLI tool to submit pipelines, verify integrity, and even simulate tampering.
+
+🧪 Supports unit + integration tests for ledger, signing, and pipelines.
+
+🔮 Roadmap includes quantum-resistant cryptography and hybrid-cloud deployments.
+
+This is not just another CI/CD tool — it’s CI/CD with provable integrity.
+
+🏗 Architecture (Phase 10)
+
+Here’s how BlockCI-Q currently works:
+
+                ┌─────────────────────────────┐
+                │        Developer            │
+                │   (writes pipeline.yaml)    │
+                └───────────────┬─────────────┘
+                                │
+                                ▼
+                   ┌───────────────────────┐
+                   │        Server         │
+                   │  - Receives pipeline  │
+                   │  - Stores ledger      │
+                   │  - Dispatches jobs    │
+                   └───────────▲───────────┘
+                               │
+           ┌───────────────────┼───────────────────┐
+           │                   │                   │
+           ▼                   ▼                   ▼
+   ┌──────────────┐     ┌──────────────┐     ┌──────────────┐
+   │   Agent-1    │     │   Agent-2    │     │   Agent-N    │
+   │ - Poll jobs  │     │ - Execute    │     │ - Execute    │
+   │ - Run steps  │     │ - Return log │     │ - Return log │
+   └──────┬───────┘     └──────┬───────┘     └──────┬───────┘
+          │                    │                    │
+          └────────── Logs + Results + Signatures ──┘
+                                │
+                                ▼
+                   ┌───────────────────────┐
+                   │   Blockchain Ledger   │
+                   │ - Immutable records   │
+                   │ - Tamper detection    │
+                   └───────────────────────┘
+
+📂 Project Structure
 blockci-q/
 │
-├── cmd/                     # entrypoints for binaries
-│   ├── agent/               # worker/agent node (executes jobs)
-│   ├── server/              # API server (webhook, jobs, ledger)
-│   └── tester/main.go       # test runner for dev
+├── cmd/                     # Entrypoints
+│   ├── agent/               # Worker agent (executes jobs)
+│   ├── server/              # API server (pipelines, jobs, ledger)
+│   └── blockci/             # CLI tool (verify, tamper, submit)
 │
-├── configs/                 # YAML configs for server & agent
-│   ├── agent.yaml
-│   └── server.yaml
-│
-├── deployments/             # deployment artifacts
-│   ├── docker-compose.yml   # local multi-service setup
-│   ├── dockerfile.agent     # build agent container
-│   ├── dockerfile.server    # build server container
-│   └── k8s/                 # Kubernetes manifests
-│
-├── internal/                # main application logic
-│   ├── agent/               # agent runtime (executes steps/jobs)
-│   ├── api/                 # REST/GraphQL API server
-│   ├── blockchain/          # immutable ledger / audit logs
-│   ├── core/                # core CI/CD engine
-│   │   ├── job.go           # job definition
-│   │   ├── parser.go        # YAML parser
-│   │   ├── pipeline.go      # pipeline + stages
-│   │   └── scheduler.go     # scheduler logic
-│   ├── security/            # authn/authz, SPIFFE/OPA later
-│   └── storage/             # artifacts, logs, results
-│
-├── pkg/                     # reusable libs (can be imported by internal/*)
-│   ├── config/              # config loader
-│   ├── logger/              # logging abstraction
-│   └── utils/               # helpers
-│
-├── scripts/                 # devops scripts
-│   ├── build.sh             # build binaries/images
-│   ├── migrate.sh           # DB migrations (ledger/artifacts DB)
-│   └── run_local.sh         # run local stack
-│
-├── tests/                   # integration/unit tests
-│
-├── web/                     # (future) dashboard UI
-│
-├── pipeline.yaml            # sample pipeline definition
-├── go.mod
-└── go.sum
+├── configs/                 # YAML configs
+├── deployments/             # Docker + K8s manifests
+├── internal/                # Main application logic
+│   ├── blockchain/          # Immutable ledger (blocks, ledger, verify)
+│   ├── core/                # CI/CD engine (parser, runner, scheduler)
+│   ├── security/            # Key management & signatures
+│   └── storage/             # Log storage
+├── pkg/                     # Utilities (hashing, config, logger)
+├── scripts/                 # DevOps helper scripts
+├── tests/                   # Unit + integration tests
+├── pipeline.yaml            # Example pipeline
+└── README.md
+
+⚡ Features Achieved Till Now
+
+✅ Blockchain-based Ledger → Stores every job log immutably.
+✅ Digital Signatures (Ed25519) → Agents sign logs before committing.
+✅ Ledger Verification → Detects tampering instantly.
+✅ CLI Tool → Submit pipelines, verify ledger, simulate tampering.
+✅ Server–Agent Communication → Agents register & poll for jobs.
+✅ Job Dispatching → Server sends jobs → agents execute → return results.
+✅ Unit & Integration Tests → For ledger, tampering detection, persistence.
+✅ Pipeline YAML Parsing → Define pipeline as YAML (pipeline.yaml).
+
+📖 Example: pipeline.yaml
+agent: agent-1
+stages:
+  - name: Build
+    steps:
+      - run: echo "Compiling project..."
+      - run: go build ./...
+  - name: Test
+    steps:
+      - run: go test ./...
+  - name: Deploy
+    steps:
+      - run: echo "Deploying application..."
+
+🚀 Getting Started
+1. Build
+# Build CLI
+go build -o blockci ./cmd/blockci
+
+# Build Server
+go build -o server ./cmd/server
+
+# Build Agent
+go build -o agent ./cmd/agent
+
+2. Start Server
+./server
 
 
--------------------------------------------------------------------------------------
+Runs on http://localhost:8080
+.
 
-                ┌───────────────────────────┐
-                │       pipeline.yaml        │
-                │  (user-defined workflow)   │
-                └──────────────▲────────────┘
-                               │ Parse
-                               │
-        ┌───────────────┐   ┌───────────────┐
-        │   Parser       │   │   Scheduler   │
-        │ (parser.go)    │   │ (schedular.go)│
-        └───────▲────────┘   └───────▲──────┘
-                │ Pipeline Struct    │ Steps
-                │                    │
-           ┌────┴────────┐     ┌─────┴──────────┐
-           │   Runner    │────▶│   Executor     │
-           │ (runner.go) │     │ (executor.go)  │
-           └─────▲───────┘     └─────▲─────────┘
-                 │ Logs + Hash        │ Output
-                 │
-        ┌────────┴─────────┐
-        │   Log Storage     │
-        │ (storage/logs)    │
-        └────────▲──────────┘
-                 │ LogHash
-                 │
-      ┌──────────┴────────────────────────────────┐
-      │              Blockchain Ledger             │
-      │               (ledger.go)                  │
-      │────────────────────────────────────────────│
-      │ Block:                                     │
-      │   • Index / Timestamp                      │
-      │   • Stage / Step                           │
-      │   • LogPath / LogHash                      │
-      │   • PrevHash → Chain linking               │
-      │   • Hash (SHA256)                          │
-      │   • AgentID                                │
-      │   • Signature (Ed25519, private key)       │
-      │   • PubKey (for verification)              │
-      └────────────────────────────────────────────┘
-                 │ VerifyChain()
-                 ▼
-        ┌───────────────────────────┐
-        │ Security Layer             │
-        │ (signing.go - Ed25519)     │
-        │   • Keypair Management     │
-        │   • Sign / Verify          │
-        └───────────────────────────┘
+3. Start Agent
+./agent
+
+4. Submit Pipeline
+./blockci submit pipeline.yaml
+
+5. Verify Ledger
+./blockci verify ./ledger.jsonl
+
+6. Simulate Tampering (for testing)
+./blockci tamper ./ledger.jsonl 0
+./blockci verify ./ledger.jsonl   # should FAIL
+
+🧪 Testing
+
+Run all tests:
+
+go test ./...
+
+
+Example blockchain tampering test:
+
+go test ./tests -run TestTamperingDetection -v
+
+🔮 Roadmap
+
+ Phase 11 → Run real jobs with blockchain ledgering.
+
+ Phase 12 → Multi-agent scheduling & job distribution.
+
+ Phase 13 → Web Dashboard for pipelines & logs.
+
+ Phase 14 → Quantum-resistant cryptography.
+
+ Phase 15 → Hybrid-cloud deployment (Kubernetes + bare-metal).
+
+👨‍💻 Contributing
+
+We’d love contributors 🚀
+
+Fork the repo.
+
+Create a feature branch (git checkout -b feature/my-feature).
+
+Commit changes (git commit -m 'add my feature').
+
+Push and open a PR.
+
+Ways to contribute:
+
+Improve blockchain consensus (future phases).
+
+Add pipeline steps (Docker builds, artifact push, etc.).
+
+Extend the CLI (blockci logs, blockci agents).
+
+Build the dashboard UI.
+
+📜 License
+
+MIT License © 2025 BlockCI-Q Contributors

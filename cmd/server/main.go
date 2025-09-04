@@ -3,6 +3,9 @@ package main
 import (
 	"blockci-q/internal/blockchain"
 	"blockci-q/internal/core"
+	"blockci-q/internal/security"
+	"blockci-q/pkg/utils"
+	"crypto/ed25519"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -10,6 +13,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 )
 
 type Agent struct {
@@ -32,7 +36,9 @@ type Server struct{
 	pipelines	  map[string]*core.Pipeline
 	status		  map[string]string
 	agents		  map[string]Agent
-	jobs			  []Job
+	jobs		  []Job
+	privKey       ed25519.PrivateKey
+	pubkey 		  ed25519.PublicKey
 }
 
 func NewServer() *Server {
@@ -41,13 +47,48 @@ func NewServer() *Server {
 		fmt.Printf("WARN: cannot open ledger: %v\n", err)
 	}
 
+	pub, priv, err := ensureServerKey("./keys/server.pub", "./keys/server.priv")
+	if err != nil {
+		panic(fmt.Sprintf("failed to init server keys: %v", err))
+	}
+
 	return &Server{
 		ledger:        ledger,
 		pipelines:     make(map[string]*core.Pipeline),	
 		status:        make(map[string]string),
 		agents:        make(map[string]Agent),
 		jobs:          make([]Job,0),
+		privKey:       priv,
+		pubkey:        pub,
 	}
+}
+
+
+//===============================pipeline handler ============================================//
+
+// Ensure keypair exists or generates a new one  
+func ensureServerKey(pubPath, privPath string)(ed25519.PublicKey, ed25519.PrivateKey, error){
+	if _, err := os.Stat(pubPath); os.IsNotExist(err){
+
+		//generate
+		pub, priv, err := security.GenerateKeyPair()
+		if err != nil {
+			return nil, nil , err
+		}
+		if err := os.MkdirAll("./keys",0700); err != nil {
+			return nil, nil, err
+		}
+		if err := security.SaveKeyPair(pub, priv, pubPath, privPath); err != nil {
+			return nil, nil, err
+		}
+		fmt.Println("Generated new server keys")
+		return pub, priv, nil
+	}
+	// load existing one
+	pub, _ := security.LoadPublicKey(pubPath)
+	priv, _ := security.LoadPrivateKey(privPath)
+	fmt.Println("Loaded existing server keys ")
+	return pub, priv, nil
 }
 
 // POST /pipelines -> submit a new pipeline YAML
@@ -101,6 +142,12 @@ func (s *Server) handleVerifyLedger(w http.ResponseWriter, r *http.Request){
 	w.Write([]byte("ledger verification ok"))
 }
 
+
+
+//====================================agent handler============================================//
+
+
+
 //	POST /agent/register
 func (s *Server) handleRegisterAgent(w http.ResponseWriter, r *http.Request){
 	var agent Agent
@@ -144,6 +191,9 @@ func (s *Server) handleNextJob(w http.ResponseWriter, r *http.Request){
 
 }
 
+
+//============================== job results ===========================================//
+
 // POST /jobs/result
 func (s *Server) handleJobResult(w http.ResponseWriter, r *http.Request){
 	var result map[string]interface{}
@@ -151,9 +201,42 @@ func (s *Server) handleJobResult(w http.ResponseWriter, r *http.Request){
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
+	defer r.Body.Close()
+
+
 
 	fmt.Println("job result received: ", result)
-	w.WriteHeader(http.StatusOK)
+	
+	// record in blockchain ledger
+	idx := s.ledger.NextIndex()
+	prev := s.ledger.LastHash()
+
+	jobID  := fmt.Sprintf("%v", result["id"])
+	agent  := fmt.Sprintf("%v", result["agentID"])
+	output := fmt.Sprintf("%v", result["output"])
+
+	// hash the output for immutability
+	logHash := utils.HashString(output)
+
+
+	blk, err := blockchain.NewBlock(idx, "JobResult", jobID, "inline-log", logHash, prev, agent)
+	if err != nil {
+		http.Error(w ,"Failed to create block :"+err.Error(), 500)
+		return
+	}
+
+	if err := s.ledger.AppendBlocks(blk, s.privKey, s.pubkey); err != nil {
+		http.Error(w, "failed to append blocks: "+err.Error(),500)
+		return
+	}
+
+	resp := map[string]string{
+		"status": "recorded",
+		"block" : fmt.Sprintf("%d",blk.Index),
+		"time":   time.Now().Format(time.RFC3339),
+	}
+	json.NewEncoder(w).Encode(resp)
+
 }
 
 
@@ -174,7 +257,7 @@ func (s *Server) preloadJobs(){
 	})
 }
 
-
+// Entry point of the code
 
 
 func main() {

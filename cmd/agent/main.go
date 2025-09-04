@@ -1,6 +1,7 @@
 package main
 
 import (
+	"blockci-q/internal/core"
 	"bytes"
 	"encoding/json"
 	"fmt"
@@ -13,6 +14,13 @@ import (
 type Agent struct {
 	ID     string  `json:"id"`
 	Host string		`json:"host"`
+}
+
+type Job struct {
+	ID     string `json:"id"`
+	Stage  string `json:"stage"`
+	Step   string `json:"step"`
+	Cmd	   string `json:"cmd"`
 }
 
 
@@ -67,7 +75,7 @@ func PollJobs(serverURL, id string){
 			continue
 		}
 
-		var job map[string]interface{}
+		var job Job
 		if err := json.NewDecoder(resp.Body).Decode(&job); err != nil {
 			fmt.Println("Decode job error", err)
 			resp.Body.Close()
@@ -75,20 +83,65 @@ func PollJobs(serverURL, id string){
 		}
 		resp.Body.Close()
 
-		fmt.Println("Received job: ",job)
+		fmt.Printf("Received job: %s (%s)\n ",job.ID,job.Cmd)
 
-		// run fake execution 
-		result := map[string]interface{}{
-			"jobID": job["id"],
-			"agent" : id,
-			"output": "simulated success",
-			"status": "done",
-			"time"  : time.Now().Format(time.RFC3339),
-		}
+		
+		// Run real  job with runner 
+		output, sucess := runJob(job, id)
 
-		data, _ := json.Marshal(result)
-		http.Post(serverURL+"/jobs/result","application/json",bytes.NewBuffer(data))
+		// Report Result
+		reportresult(serverURL,job,id,output,sucess)
 	}
+}
+
+// Run job using core.runner
+func runJob(job Job, agentID string)(string, bool) {
+	runner := core.NewRunner()
+
+	//wrap job as minimal pipeline
+	pipeline := &core.Pipeline{
+		Agent: agentID,
+		Stages: []core.Stage{
+			{
+				Name: job.Stage,
+				Steps: []core.Step{
+					{Run: job.Cmd},
+				},
+
+			},
+		},
+	}
+	err := runner.RunPipeline(pipeline)
+	if err != nil {
+		return fmt.Sprintf("job %s failde : %v", job.ID,err), false
+	}
+	return fmt.Sprintf("job %s completed successfully", job.ID), true
+}
+
+
+//Report back to the server
+func reportresult(serverURL string, job Job, agentID string, output string, sucess bool){
+	result := map[string]interface{}{
+		"id" :   job.ID,
+		"stage": job.Stage,
+		"step":  job.Step,
+		"cmd":   job.Cmd,
+		"agentID": agentID,
+		"output" : output,
+		"success" : sucess,
+		"time" : time.Now().Format(time.RFC3339),
+	}
+
+	data ,_ := json.Marshal(result)
+	resp, err := http.Post(serverURL+"/jobs/result","application/json", bytes.NewBuffer(data))
+	if err != nil {
+		fmt.Println("Failed to report result:", err)
+		return
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	fmt.Println("Reported result:", string(body))
 }
 
 

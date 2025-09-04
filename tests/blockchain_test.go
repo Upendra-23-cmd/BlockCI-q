@@ -10,7 +10,7 @@ import (
 )
 
 // helper to create a dummy log file for hashing
-func createTempLog(t *testing.T, content string) string {
+func createTempLog_one(t *testing.T, content string) string {
 	t.Helper()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "log.txt")
@@ -45,7 +45,7 @@ func TestNewBlockAndHash(t *testing.T) {
 
 // ✅ Test appending multiple blocks to the ledger with signing
 func TestLedgerAppendAndVerify(t *testing.T) {
-	tmpFile := filepath.Join(t.TempDir(), "ledger.jsonl")
+	tmpFile := filepath.Join(t.TempDir(), "ledger.json")
 	ledger, err := blockchain.OpenLedger(tmpFile)
 	if err != nil {
 		t.Fatalf("failed to open ledger: %v", err)
