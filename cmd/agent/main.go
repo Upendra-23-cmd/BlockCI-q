@@ -12,93 +12,105 @@ import (
 )
 
 type Agent struct {
-	ID     string  `json:"id"`
-	Host string		`json:"host"`
+	ID   string `json:"id"`
+	Host string `json:"host"`
 }
 
 type Job struct {
-	ID     string `json:"id"`
-	Stage  string `json:"stage"`
-	Step   string `json:"step"`
-	Cmd	   string `json:"cmd"`
+	ID    string `json:"id"`
+	Stage string `json:"stage"`
+	Step  string `json:"step"`
+	Cmd   string `json:"cmd"`
+	Status string `json:"status"`
+	AgentID string `json:"agentId"`
 }
-
 
 func main() {
 	serverURL := "http://localhost:8080"
-	agentID  := "agent-1"
+	agentID := "agent-1"
 
-	if err := registeragent(serverURL, agentID);err != nil {
-		fmt.Println("X",err)
+	// create one runner for the agent lifetime
+	runner := core.NewRunner()
+
+	if err := registerAgent(serverURL, agentID); err != nil {
+		fmt.Println("❌ failed to register agent:", err)
 		os.Exit(1)
 	}
 
-	fmt.Println("Agent started , polling for jobs")
-	PollJobs(serverURL,agentID)
+	fmt.Println("✅ Agent started, polling for jobs...")
+	pollJobs(serverURL, agentID, runner)
 }
 
-
-
-func registeragent(serverURL, id string)error{
-
-	agent := Agent{ID: id, Host: "local host"}
+// registerAgent registers this agent with the server
+func registerAgent(serverURL, id string) error {
+	agent := Agent{ID: id, Host: "localhost"}
 	data, _ := json.Marshal(agent)
 
-	resp, err := http.Post(serverURL+"/agent/register","application/json", bytes.NewBuffer(data))
+	resp, err := http.Post(serverURL+"/agent/register", "application/json", bytes.NewBuffer(data))
 	if err != nil {
-		return fmt.Errorf("failed to register agent : %w", err)
+		return fmt.Errorf("failed to register agent: %w", err)
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK{
+	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
 		return fmt.Errorf("register failed: %s", string(body))
 	}
 
-	fmt.Println("Agent registered :", id)
+	fmt.Println("✅ Agent registered:", id)
 	return nil
 }
 
-func PollJobs(serverURL, id string){
-
-	for{
-		resp, err := http.Get(fmt.Sprintf("%s/agents/%s/jobs/next", serverURL, id))
+// pollJobs continuously polls the server for the next job
+func pollJobs(serverURL, id string, runner *core.Runner) {
+	for {
+		url := fmt.Sprintf("%s/agents/%s/jobs/next", serverURL, id)
+		resp, err := http.Get(url)
 		if err != nil {
-			fmt.Println("poll error: ", err)
-			time.Sleep(5*time.Second)
+			fmt.Println("⚠️ poll error:", err)
+			time.Sleep(5 * time.Second)
 			continue
 		}
-		
 
+		// Handle NoContent (no job)
 		if resp.StatusCode == http.StatusNoContent {
-			time.Sleep(3*time.Second)
+			resp.Body.Close()
+			time.Sleep(2 * time.Second)
+			continue
+		}
+
+		// Expect 200 OK with job JSON
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			fmt.Printf("⚠️ unexpected status %d: %s\n", resp.StatusCode, string(body))
+			time.Sleep(3 * time.Second)
 			continue
 		}
 
 		var job Job
 		if err := json.NewDecoder(resp.Body).Decode(&job); err != nil {
-			fmt.Println("Decode job error", err)
+			fmt.Println("⚠️ decode job error:", err)
 			resp.Body.Close()
+			time.Sleep(2 * time.Second)
 			continue
 		}
 		resp.Body.Close()
 
-		fmt.Printf("Received job: %s (%s)\n ",job.ID,job.Cmd)
+		fmt.Printf("📥 Received job: %s (cmd=%s)\n", job.ID, job.Cmd)
 
-		
-		// Run real  job with runner 
-		output, sucess := runJob(job, id)
+		// execute job using the runner
+		output, success, logPath := runJob(job, id, runner)
 
-		// Report Result
-		reportresult(serverURL,job,id,output,sucess)
+		// report result back to server (server will append to ledger)
+		reportResult(serverURL, job, id, output, success, logPath)
 	}
 }
 
-// Run job using core.runner
-func runJob(job Job, agentID string)(string, bool) {
-	runner := core.NewRunner()
-
-	//wrap job as minimal pipeline
+// runJob executes the job using the provided runner.
+// Returns: output human message, success flag, logPath (may be empty if log save failed)
+func runJob(job Job, agentID string, runner *core.Runner) (string, bool, string) {
+	// Build a minimal pipeline for this single-step job
 	pipeline := &core.Pipeline{
 		Agent: agentID,
 		Stages: []core.Stage{
@@ -107,41 +119,48 @@ func runJob(job Job, agentID string)(string, bool) {
 				Steps: []core.Step{
 					{Run: job.Cmd},
 				},
-
 			},
 		},
 	}
-	err := runner.RunPipeline(pipeline)
+
+	// Run pipeline; runner will save step logs and return map[stepCmd] -> logPath
+	results, err := runner.RunPipeline(pipeline)
 	if err != nil {
-		return fmt.Sprintf("job %s failde : %v", job.ID,err), false
+		return fmt.Sprintf("job %s failed: %v", job.ID, err), false, ""
 	}
-	return fmt.Sprintf("job %s completed successfully", job.ID), true
+
+	// Extract the first (and expected only) logPath from results map
+	var logPath string
+	for _, lp := range results {
+		logPath = lp
+		break
+	}
+
+	return fmt.Sprintf("job %s completed successfully", job.ID), true, logPath
 }
 
-
-//Report back to the server
-func reportresult(serverURL string, job Job, agentID string, output string, sucess bool){
+// reportResult sends a structured result JSON to the server so server can record it in ledger
+func reportResult(serverURL string, job Job, agentID string, output string, success bool, logPath string) {
 	result := map[string]interface{}{
-		"id" :   job.ID,
-		"stage": job.Stage,
-		"step":  job.Step,
-		"cmd":   job.Cmd,
+		"id":      job.ID,
+		"stage":   job.Stage,
+		"step":    job.Step,
+		"cmd":     job.Cmd,
 		"agentID": agentID,
-		"output" : output,
-		"success" : sucess,
-		"time" : time.Now().Format(time.RFC3339),
+		"output":  output,
+		"logPath": logPath,
+		"success": success,
+		"time":    time.Now().Format(time.RFC3339),
 	}
 
-	data ,_ := json.Marshal(result)
-	resp, err := http.Post(serverURL+"/jobs/result","application/json", bytes.NewBuffer(data))
+	data, _ := json.Marshal(result)
+	resp, err := http.Post(serverURL+"/jobs/result", "application/json", bytes.NewBuffer(data))
 	if err != nil {
-		fmt.Println("Failed to report result:", err)
+		fmt.Println("⚠️ failed to report result:", err)
 		return
 	}
 	defer resp.Body.Close()
 
 	body, _ := io.ReadAll(resp.Body)
-	fmt.Println("Reported result:", string(body))
+	fmt.Println("📤 Reported result:", string(body))
 }
-
-
