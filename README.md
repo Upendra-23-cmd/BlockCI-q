@@ -170,8 +170,3 @@ Build the dashboard UI.
 MIT License © 2025 BlockCI-Q Contributors
 
 
----
-
-Do you want me to also **add badges** (Go version, build status, license, etc.) at the top so the README looks more **professional for GitHub**?
-
-
