@@ -10,7 +10,7 @@ import (
 )
 
 // helper to create a dummy log file for hashing
-func createTempLog_one(t *testing.T, content string) string {
+func createTempLog(t *testing.T, content string) string {
 	t.Helper()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "log.txt")
@@ -95,7 +95,7 @@ func TestTamperingDetection(t *testing.T) {
 	}
 
 	// simulate tampering
-	ledger.Blocks()[0].LogHash = "fakehash"
+	ledger.Blocks[0].LogHash = "fakehash"
 
 	// verify should fail
 	if err := ledger.VerifyChain(); err == nil {

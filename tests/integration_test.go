@@ -1,4 +1,3 @@
-
 package tests
 
 import (
@@ -10,7 +9,8 @@ import (
 	"testing"
 )
 
-func createTempLog(t *testing.T, content string) string {
+// helper: create a temporary log file with given content
+func createTempLog1(t *testing.T, content string) string {
 	t.Helper()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "log.txt")
@@ -21,7 +21,7 @@ func createTempLog(t *testing.T, content string) string {
 }
 
 func TestLedgerBlockAppendAndVerify(t *testing.T) {
-	tmpFile := filepath.Join(t.TempDir(), "ledger.jsonl")
+	tmpFile := filepath.Join(t.TempDir(), "ledger.json")
 	ledger, err := blockchain.OpenLedger(tmpFile)
 	if err != nil {
 		t.Fatalf("failed to open ledger: %v", err)
@@ -34,24 +34,24 @@ func TestLedgerBlockAppendAndVerify(t *testing.T) {
 	}
 
 	// Step 1: create fake log
-	log1 := createTempLog(t, "hello build step")
+	log1 := createTempLog1(t, "hello build step")
 	h1, _ := utils.HashFile(log1)
 	b1, _ := blockchain.NewBlock(0, "Build", "echo build", log1, h1, "", "agent-1")
 
-	// ✅ Append with proper keys
+	// ✅ Append with proper keys (signing happens inside AppendBlocks)
 	if err := ledger.AppendBlocks(b1, priv, pub); err != nil {
 		t.Fatalf("failed to append block1: %v", err)
 	}
 
-	// Step 2: verify chain
+	// Step 2: verify chain (should succeed)
 	if err := ledger.VerifyChain(); err != nil {
 		t.Fatalf("ledger verify failed unexpectedly: %v", err)
 	}
 
 	// Step 3: tamper with block hash
-	ledger.Blocks()[0].LogHash = "fake-hash"
+	ledger.Blocks[0].LogHash = "fake-hash"
 
-	// Step 4: verify should fail
+	// Step 4: verify should now fail
 	if err := ledger.VerifyChain(); err == nil {
 		t.Errorf("expected tampering detection, but chain verified")
 	} else {

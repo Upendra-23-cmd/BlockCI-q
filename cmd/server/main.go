@@ -4,7 +4,6 @@ import (
 	"blockci-q/internal/blockchain"
 	"blockci-q/internal/core"
 	"blockci-q/internal/security"
-	"blockci-q/pkg/utils"
 	"crypto/ed25519"
 	"encoding/json"
 	"fmt"
@@ -22,48 +21,52 @@ type Agent struct {
 }
 
 type Job struct {
-	ID      string `json:"id"`
-	Stage   string `json:"stage"`
-	Step    string `json:"step"`
-	Cmd     string `json:"cmd"`
-	Status  string `json:"status"`
-	AgentID string `json:"agentId"`
+	ID         string `json:"id"`
+	Stage      string `json:"stage"`
+	Step       string `json:"step"`
+	Cmd        string `json:"cmd"`
+	PipelineID string `json:"pipelineId"`
+}
+
+type PipelineStatus struct {
+	Global string            `json:"global"` // pending, running, done, failed
+	Steps  map[string]string `json:"steps"`  // stepKey -> status
 }
 
 type Server struct {
 	mu        sync.Mutex
 	ledger    *blockchain.Ledger
 	pipelines map[string]*core.Pipeline
-	status    map[string]string
+	status    map[string]*PipelineStatus // pipelineID -> PipelineStatus
 	agents    map[string]Agent
-	jobs      []Job
+	jobQueues map[string][]Job           // pipelineID -> job queue
 	privKey   ed25519.PrivateKey
-	pubkey    ed25519.PublicKey
+	pubKey    ed25519.PublicKey
 }
+
+//========================= INIT ===============================//
 
 func NewServer() *Server {
 	ledger, err := blockchain.OpenLedger("./ledger.json")
 	if err != nil {
-		fmt.Printf("WARN: cannot open ledger: %v\n", err)
+		fmt.Printf("⚠️ WARN: cannot open ledger: %v\n", err)
 	}
 
 	pub, priv, err := ensureServerKey("./keys/server.pub", "./keys/server.priv")
 	if err != nil {
-		panic(fmt.Sprintf("failed to init server keys: %v", err))
+		panic(fmt.Sprintf("❌ failed to init server keys: %v", err))
 	}
 
 	return &Server{
 		ledger:    ledger,
 		pipelines: make(map[string]*core.Pipeline),
-		status:    make(map[string]string),
+		status:    make(map[string]*PipelineStatus),
 		agents:    make(map[string]Agent),
-		jobs:      make([]Job, 0),
+		jobQueues: make(map[string][]Job),
 		privKey:   priv,
-		pubkey:    pub,
+		pubKey:    pub,
 	}
 }
-
-//================================ keys ==================================//
 
 func ensureServerKey(pubPath, privPath string) (ed25519.PublicKey, ed25519.PrivateKey, error) {
 	if _, err := os.Stat(pubPath); os.IsNotExist(err) {
@@ -77,17 +80,18 @@ func ensureServerKey(pubPath, privPath string) (ed25519.PublicKey, ed25519.Priva
 		if err := security.SaveKeyPair(pub, priv, pubPath, privPath); err != nil {
 			return nil, nil, err
 		}
-		fmt.Println("Generated new server keys")
+		fmt.Println("🔑 Generated new server keys")
 		return pub, priv, nil
 	}
 	pub, _ := security.LoadPublicKey(pubPath)
 	priv, _ := security.LoadPrivateKey(privPath)
-	fmt.Println("Loaded existing server keys ")
+	fmt.Println("🔑 Loaded existing server keys")
 	return pub, priv, nil
 }
 
-//=============================== pipeline handlers ===============================//
+//========================= PIPELINE ===============================//
 
+// POST /pipelines -> submit a new pipeline YAML
 func (s *Server) handleSubmitPipeline(w http.ResponseWriter, r *http.Request) {
 	data, err := io.ReadAll(r.Body)
 	if err != nil {
@@ -105,7 +109,31 @@ func (s *Server) handleSubmitPipeline(w http.ResponseWriter, r *http.Request) {
 
 	s.mu.Lock()
 	s.pipelines[id] = pipeline
-	s.status[id] = "pending"
+	s.jobQueues[id] = make([]Job, 0)
+
+	status := &PipelineStatus{
+		Global: "pending",
+		Steps:  make(map[string]string),
+	}
+
+	// flatten pipeline → jobs
+	jobCount := 0
+	for _, stage := range pipeline.Stages {
+		for _, step := range stage.Steps {
+			jobID := fmt.Sprintf("%s-job-%d", id, jobCount+1)
+			job := Job{
+				ID:         jobID,
+				Stage:      stage.Name,
+				Step:       step.Name,
+				Cmd:        step.Run,
+				PipelineID: id,
+			}
+			s.jobQueues[id] = append(s.jobQueues[id], job)
+			status.Steps[fmt.Sprintf("%s:%s", stage.Name, step.Name)] = "pending"
+			jobCount++
+		}
+	}
+	s.status[id] = status
 	s.mu.Unlock()
 
 	w.Header().Set("Content-Type", "application/json")
@@ -115,36 +143,31 @@ func (s *Server) handleSubmitPipeline(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// GET /pipelines/{id}/status
 func (s *Server) handleGetPipelineStatus(w http.ResponseWriter, r *http.Request) {
-	id := r.URL.Path[len("/pipeline/"):]
+	id := strings.TrimPrefix(r.URL.Path, "/pipelines/")
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	status, ok := s.status[id]
 	if !ok {
-		http.Error(w, "pipeline not found", http.StatusBadRequest)
+		http.Error(w, "pipeline not found", http.StatusNotFound)
 		return
 	}
-	json.NewEncoder(w).Encode(map[string]string{"id": id, "status": status})
+	json.NewEncoder(w).Encode(status)
 }
 
-//=============================== ledger handlers ===============================//
+//========================= LEDGER ===============================//
 
 func (s *Server) handleVerifyLedger(w http.ResponseWriter, r *http.Request) {
-	fmt.Println("DEBUG: /ledger/verify called")
-
-	if s.ledger == nil {
-		http.Error(w, "ledger not initialized", http.StatusInternalServerError)
-		return
-	}
-
 	if err := s.ledger.VerifyChain(); err != nil {
 		http.Error(w, "ledger verification failed: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
-
-	w.Header().Set("Content-Type", "text/plain")
-	w.Write([]byte("ledger verification ok\n"))
+	w.Write([]byte("✅ ledger verification OK"))
 }
 
-//=============================== agent handlers ===============================//
+//========================= AGENT ===============================//
 
 func (s *Server) handleRegisterAgent(w http.ResponseWriter, r *http.Request) {
 	var agent Agent
@@ -152,16 +175,16 @@ func (s *Server) handleRegisterAgent(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
-
 	s.mu.Lock()
 	s.agents[agent.ID] = agent
 	s.mu.Unlock()
 
-	fmt.Println("Agent registered:", agent.ID)
-	w.Header().Set("Content-type", "application/json")
+	fmt.Println("🤝 Agent registered:", agent.ID)
+	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(agent)
 }
 
+// GET /agents/{id}/jobs/next
 func (s *Server) handleNextJob(w http.ResponseWriter, r *http.Request) {
 	parts := strings.Split(r.URL.Path, "/")
 	if len(parts) < 4 {
@@ -173,22 +196,29 @@ func (s *Server) handleNextJob(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	for i, job := range s.jobs {
-		if job.Status == "pending" {
-			s.jobs[i].Status = "running"
-			s.jobs[i].AgentID = agentID
-			fmt.Printf("Sending job %s to agent %s\n", job.ID, agentID)
+	for pid, queue := range s.jobQueues {
+		if len(queue) > 0 {
+			job := queue[0]
+			s.jobQueues[pid] = queue[1:] // dequeue
 
-			w.Header().Set("Content-type", "application/json")
+			// update step → running
+			s.status[pid].Steps[fmt.Sprintf("%s:%s", job.Stage, job.Step)] = "running"
+			// update global → running
+			if s.status[pid].Global == "pending" {
+				s.status[pid].Global = "running"
+			}
+
+			fmt.Printf("📤 Sending job %s (pipeline %s) to agent %s\n", job.ID, pid, agentID)
+
+			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(job)
 			return
 		}
-
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
-//=============================== job result handlers ===============================//
+//========================= JOB RESULTS ===============================//
 
 func (s *Server) handleJobResult(w http.ResponseWriter, r *http.Request) {
 	var result map[string]interface{}
@@ -198,48 +228,46 @@ func (s *Server) handleJobResult(w http.ResponseWriter, r *http.Request) {
 	}
 	defer r.Body.Close()
 
-	fmt.Println("job result received:", result)
+	fmt.Println("📩 Job result received:", result)
 
-	jobID := fmt.Sprintf("%v", result["id"])
-
-	s.mu.Lock()
-	for i := range s.jobs {
-		if s.jobs[i].ID == jobID {
-			s.jobs[i].Status = "done"
-		}
-	}
-	s.mu.Unlock()
-
-	// record in block chainledger
 	idx := s.ledger.NextIndex()
 	prev := s.ledger.LastHash()
 
-	agent := fmt.Sprintf("%v", result["agentID"])
-	output := fmt.Sprintf("%v", result["output"])
+	stage := fmt.Sprintf("%v", result["stage"])
+	step := fmt.Sprintf("%v", result["step"])
 	logPath := fmt.Sprintf("%v", result["logPath"])
+	logHash := fmt.Sprintf("%v", result["logHash"])
+	agent := fmt.Sprintf("%v", result["agentID"])
+	pipelineID := fmt.Sprintf("%v", result["pipelineId"])
 
-	var logHash string
-	if logPath != "" && logPath != "<nil>" {
-		h, err := utils.HashFile(logPath)
-		if err != nil {
-			fmt.Printf("⚠️ WARN: cannot hash log file %s: %v\n", logPath, err)
-			logHash = utils.HashString(output) // fallback
-		} else {
-			logHash = h
-		}
-	} else {
-		logHash = utils.HashString(output)
-	}
-
-	blk, err := blockchain.NewBlock(idx, "JobResult", jobID, "inline-log", logHash, prev, agent)
+	blk, err := blockchain.NewBlock(idx, stage, step, logPath, logHash, prev, agent)
 	if err != nil {
-		http.Error(w, "Failed to create block :"+err.Error(), 500)
+		http.Error(w, "failed to create block: "+err.Error(), 500)
 		return
 	}
 
-	if err := s.ledger.AppendBlocks(blk, s.privKey, s.pubkey); err != nil {
-		http.Error(w, "failed to append blocks: "+err.Error(), 500)
+	if err := s.ledger.AppendBlocks(blk, s.privKey, s.pubKey); err != nil {
+		http.Error(w, "failed to append block: "+err.Error(), 500)
 		return
+	}
+
+	// update pipeline status
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	stepKey := fmt.Sprintf("%s:%s", stage, step)
+	s.status[pipelineID].Steps[stepKey] = "done"
+
+	// recompute global pipeline status
+	allDone := true
+	for _, st := range s.status[pipelineID].Steps {
+		if st == "pending" || st == "running" {
+			allDone = false
+			break
+		}
+	}
+	if allDone {
+		s.status[pipelineID].Global = "done"
 	}
 
 	resp := map[string]string{
@@ -250,34 +278,14 @@ func (s *Server) handleJobResult(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(resp)
 }
 
-//=============================== preload jobs ===============================//
-
-func (s *Server) preloadJobs() {
-	s.jobs = append(s.jobs, Job{
-		ID:     "job-1",
-		Stage:  "Build",
-		Step:   "Compile",
-		Cmd:    "echo Building",
-		Status: "pending",
-	})
-	s.jobs = append(s.jobs, Job{
-		ID:     "job-2",
-		Stage:  "Test",
-		Step:   "Unit Test",
-		Cmd:    "echo Running tests",
-		Status: "pending",
-	})
-}
-
-//=============================== main ===============================//
+//========================= BOOTSTRAP ===============================//
 
 func main() {
 	s := NewServer()
-	s.preloadJobs()
 
 	http.HandleFunc("/pipelines", s.handleSubmitPipeline)
-	http.HandleFunc("/pipeline/", s.handleGetPipelineStatus)
-	http.HandleFunc("/ledger/verify", s.handleVerifyLedger) // ✅ fixed route
+	http.HandleFunc("/pipelines/", s.handleGetPipelineStatus)
+	http.HandleFunc("/ledger/verify", s.handleVerifyLedger)
 
 	http.HandleFunc("/agent/register", s.handleRegisterAgent)
 	http.HandleFunc("/agents/", s.handleNextJob)
@@ -287,6 +295,6 @@ func main() {
 	if port == "" {
 		port = "8080"
 	}
-	fmt.Println("BLOCKCI-Q running on port", port)
+	fmt.Println("🚀 BLOCKCI-Q Server running on port", port)
 	http.ListenAndServe(":"+port, nil)
 }

@@ -1,59 +1,61 @@
 package blockchain
 
 import (
-	"blockci-q/internal/security"
 	"crypto/ed25519"
 	"encoding/hex"
 	"fmt"
 )
 
-// VerifyChain re-computes each block hash and link to detct tampering
+// VerifyChain validates all blocks: recompute hash, prev linkage, index sanity and signature.
 func (l *Ledger) VerifyChain() error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-
-	for i := range l.blocks {
-		b := l.blocks[i]
-
-		// recompute hash
-		h , err := b.ComputeHash()
-		if err != nil {
-			return fmt.Errorf("compute hash for index %d : %w", b.Index, err)
-		}
-		if h != b.Hash {
-			return fmt.Errorf("hash mismatch at index %d" , b.Index)
-		}
-
-		// Check link 
-		if i > 0 && b.PrevHash != l.blocks[i-1].Hash {
-			return fmt.Errorf("prev hash mismatch at index %d", b.Index)
-		}
+	for i, blk := range l.Blocks {
 		// index sanity
-		if b.Index != i {
-			return fmt.Errorf("index mismatch : expected %d got %d ", i, b.Index)
+		if blk.Index != i {
+			return fmt.Errorf("index mismatch at %d: block.Index=%d", i, blk.Index)
 		}
 
-		// Verify signature
-		if b.PubKey != "" && b.Signature != "" {
-			pubBytes, err := hex.DecodeString(b.PubKey)
-			if err != nil {
-				return fmt.Errorf("invalid public key at index %d: %w",b.Index,err)
-			}
-			pubKey := ed25519.PublicKey(pubBytes)
+		// recompute hash and compare
+		expected, err := blk.ComputeHash()
+		if err != nil {
+			return fmt.Errorf("cannot compute hash for index %d: %w", blk.Index, err)
+		}
+		if blk.Hash != expected {
+			return fmt.Errorf("hash mismatch at index %d", blk.Index)
+		}
 
-			data , err := b.canonicalData()
-			if err != nil {
-				return fmt.Errorf("cannot get canonical data at index %d : %w",b.Index,err)
+		// prevHash linkage
+		if i > 0 {
+			if blk.PrevHash != l.Blocks[i-1].Hash {
+				return fmt.Errorf("prevHash mismatch at index %d", blk.Index)
 			}
-			ok, vErr := security.VerifySignature(pubKey, data, b.Signature)
-			if vErr != nil {
-				return fmt.Errorf("signature decode error at index %d: %w", b.Index, vErr)
-			}
-			if !ok {
-				return fmt.Errorf("signature verification failed at index %d", b.Index)
-			}
+		} else {
+			// first block should have empty prevHash (or some genesis rule)
+			// no-op, allow empty prevHash
+		}
+
+		// require signature and pubKey
+		if blk.Signature == "" || blk.PubKey == "" {
+			return fmt.Errorf("missing signature or pubKey at index %d", blk.Index)
+		}
+
+		// decode pubkey and signature
+		pubBytes, err := hex.DecodeString(blk.PubKey)
+		if err != nil {
+			return fmt.Errorf("invalid pubKey encoding at index %d: %w", blk.Index, err)
+		}
+		sigBytes, err := hex.DecodeString(blk.Signature)
+		if err != nil {
+			return fmt.Errorf("invalid signature encoding at index %d: %w", blk.Index, err)
+		}
+
+		// verify signature over the block hash
+		if !ed25519.Verify(ed25519.PublicKey(pubBytes), []byte(blk.Hash), sigBytes) {
+			return fmt.Errorf("signature verification failed at index %d", blk.Index)
 		}
 	}
+
 	return nil
 }

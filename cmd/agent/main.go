@@ -17,19 +17,18 @@ type Agent struct {
 }
 
 type Job struct {
-	ID    string `json:"id"`
-	Stage string `json:"stage"`
-	Step  string `json:"step"`
-	Cmd   string `json:"cmd"`
-	Status string `json:"status"`
-	AgentID string `json:"agentId"`
+	ID         string `json:"id"`
+	Stage      string `json:"stage"`
+	Step       string `json:"step"`
+	Cmd        string `json:"cmd"`
+	PipelineID string `json:"pipelineId"`
 }
 
 func main() {
 	serverURL := "http://localhost:8080"
 	agentID := "agent-1"
 
-	// create one runner for the agent lifetime
+	// one runner per agent lifecycle
 	runner := core.NewRunner()
 
 	if err := registerAgent(serverURL, agentID); err != nil {
@@ -41,7 +40,7 @@ func main() {
 	pollJobs(serverURL, agentID, runner)
 }
 
-// registerAgent registers this agent with the server
+// registerAgent registers the agent with the server
 func registerAgent(serverURL, id string) error {
 	agent := Agent{ID: id, Host: "localhost"}
 	data, _ := json.Marshal(agent)
@@ -57,11 +56,11 @@ func registerAgent(serverURL, id string) error {
 		return fmt.Errorf("register failed: %s", string(body))
 	}
 
-	fmt.Println("✅ Agent registered:", id)
+	fmt.Println("🤝 Agent registered:", id)
 	return nil
 }
 
-// pollJobs continuously polls the server for the next job
+// pollJobs continuously fetches and executes jobs
 func pollJobs(serverURL, id string, runner *core.Runner) {
 	for {
 		url := fmt.Sprintf("%s/agents/%s/jobs/next", serverURL, id)
@@ -72,14 +71,12 @@ func pollJobs(serverURL, id string, runner *core.Runner) {
 			continue
 		}
 
-		// Handle NoContent (no job)
 		if resp.StatusCode == http.StatusNoContent {
 			resp.Body.Close()
 			time.Sleep(2 * time.Second)
 			continue
 		}
 
-		// Expect 200 OK with job JSON
 		if resp.StatusCode != http.StatusOK {
 			body, _ := io.ReadAll(resp.Body)
 			resp.Body.Close()
@@ -99,37 +96,33 @@ func pollJobs(serverURL, id string, runner *core.Runner) {
 
 		fmt.Printf("📥 Received job: %s (cmd=%s)\n", job.ID, job.Cmd)
 
-		// execute job using the runner
+		// run the job
 		output, success, logPath := runJob(job, id, runner)
 
-		// report result back to server (server will append to ledger)
+		// report result
 		reportResult(serverURL, job, id, output, success, logPath)
 	}
 }
 
-// runJob executes the job using the provided runner.
-// Returns: output human message, success flag, logPath (may be empty if log save failed)
+// runJob executes a single job via runner
 func runJob(job Job, agentID string, runner *core.Runner) (string, bool, string) {
-	// Build a minimal pipeline for this single-step job
 	pipeline := &core.Pipeline{
 		Agent: agentID,
 		Stages: []core.Stage{
 			{
 				Name: job.Stage,
 				Steps: []core.Step{
-					{Run: job.Cmd},
+					{Name: job.Step, Run: job.Cmd},
 				},
 			},
 		},
 	}
 
-	// Run pipeline; runner will save step logs and return map[stepCmd] -> logPath
 	results, err := runner.RunPipeline(pipeline)
 	if err != nil {
 		return fmt.Sprintf("job %s failed: %v", job.ID, err), false, ""
 	}
 
-	// Extract the first (and expected only) logPath from results map
 	var logPath string
 	for _, lp := range results {
 		logPath = lp
@@ -139,18 +132,28 @@ func runJob(job Job, agentID string, runner *core.Runner) (string, bool, string)
 	return fmt.Sprintf("job %s completed successfully", job.ID), true, logPath
 }
 
-// reportResult sends a structured result JSON to the server so server can record it in ledger
+// reportResult sends job result to the server
 func reportResult(serverURL string, job Job, agentID string, output string, success bool, logPath string) {
+	// compute hash of log file
+	logHash := ""
+	if logPath != "" {
+		if h, err := core.ComputeLogHash(logPath); err == nil {
+			logHash = h
+		}
+	}
+
 	result := map[string]interface{}{
-		"id":      job.ID,
-		"stage":   job.Stage,
-		"step":    job.Step,
-		"cmd":     job.Cmd,
-		"agentID": agentID,
-		"output":  output,
-		"logPath": logPath,
-		"success": success,
-		"time":    time.Now().Format(time.RFC3339),
+		"id":         job.ID,
+		"pipelineId": job.PipelineID,
+		"stage":      job.Stage,
+		"step":       job.Step,
+		"cmd":        job.Cmd,
+		"agentID":    agentID,
+		"output":     output,
+		"logPath":    logPath,
+		"logHash":    logHash,
+		"success":    success,
+		"time":       time.Now().Format(time.RFC3339),
 	}
 
 	data, _ := json.Marshal(result)

@@ -1,22 +1,19 @@
 package core
 
- // Pipeline represents the entire CI/CD pipline
- type Pipeline struct {
+// Pipeline represents the full CI/CD pipeline
+type Pipeline struct {
+	Agent  string  `yaml:"agent"`
+	Stages []Stage `yaml:"stages"`
+}
 
- 	Agent string `yaml:"agent"`              // Name of pipeline (from pipeline.yaml)
- 	Stages []Stage `yaml:"stages"`		   // Ordered list of stages
+// Stage is an ordered sequence of steps
+type Stage struct {
+	Name  string `yaml:"name"`
+	Steps []Step `yaml:"steps"`
+}
 
-   }
-
- // Stages represents a group of jobs
-// Stages run Squentially ( stage1 --> stage2 --> stage3)
-
- type Stage struct {
-
-	Name string  `yaml:"name"`               // Stage name (e.g. "build" , "test")
- 	Steps []Step   `yaml:"steps"`				 // jobs inside stage
- }
-
-
-
-
+// Step is a single command in a stage
+type Step struct {
+	Name string `yaml:"name"`
+	Run  string `yaml:"run"`
+}

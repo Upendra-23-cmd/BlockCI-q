@@ -1,130 +1,118 @@
 package blockchain
 
 import (
-	"blockci-q/internal/security"
-	"bufio"
+	"bytes"
 	"crypto/ed25519"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"sync"
-) 
+)
 
 type Ledger struct {
-	Path string
-	mu   sync.Mutex
-	blocks []*Block
+	mu     sync.Mutex
+	Blocks []*Block
+	path   string
 }
 
-// Opensledger  loads an existing ledger.jsonl (if present) or creates an empty one
-func OpenLedger(path string )(*Ledger, error) {
-	l := &Ledger{Path: path}
-	if err := l.load(); err != nil {
-		return nil, err
+// OpenLedger loads an existing ledger file or creates a new in-memory ledger.
+// Ledger file format: JSON lines (one JSON block per line).
+func OpenLedger(path string) (*Ledger, error) {
+	l := &Ledger{
+		Blocks: make([]*Block, 0),
+		path:   path,
 	}
-	return l ,nil
-}
 
-func (l *Ledger) load() error {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-     
-	l.blocks = nil 
-
-	file, err := os.Open(l.Path)
-	if errors.Is(err, os.ErrNotExist){
-		// Creates an empty file so appends succed later
-		f, createErr := os.OpenFile(l.Path, os.O_CREATE|os.O_WRONLY, 0644)
-		if createErr != nil {
-			return createErr
+	// If file missing, create empty file
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY, 0644)
+		if err != nil {
+			return nil, err
 		}
 		_ = f.Close()
-		return nil
+		return l, nil
 	}
+
+	// Read file and decode JSON lines
+	data, err := os.ReadFile(path)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	defer file.Close()
+	if len(data) == 0 {
+		return l, nil
+	}
 
-	sc := bufio.NewScanner(file)
-	for sc.Scan() {
-		var b Block 
-		if err := json.Unmarshal(sc.Bytes(),&b); err != nil {
-			return fmt.Errorf("Ledger parse error : %w", err)
+	dec := json.NewDecoder(bytes.NewReader(data))
+	for dec.More() {
+		var blk Block
+		if err := dec.Decode(&blk); err != nil {
+			return nil, fmt.Errorf("failed to decode ledger entry: %w", err)
 		}
-		l.blocks = append(l.blocks, &b)
+		l.Blocks = append(l.Blocks, &blk)
 	}
-	return sc.Err()
+	return l, nil
 }
 
-
-// LastHash returns the hash of the last block (or empty if none)
-func (l *Ledger) LastHash() string {
-	if len(l.blocks) == 0 {
-		return ""
-	}
-	return l.blocks[len(l.blocks)-1].Hash
-}
-
-// NextIndex returns the next block index
-func (l*Ledger) NextIndex() int {
-	return len(l.blocks)
-}
-
-// AppendBlocks append a block to memory and file (append-only)
-func (l *Ledger) AppendBlocks(b *Block , privkey ed25519.PrivateKey, pubKey ed25519.PublicKey) error {
+// AppendBlocks appends a block into the ledger, signs it with server's priv key,
+// stores hex pubkey, persists to disk (JSONL), and keeps it in memory.
+func (l *Ledger) AppendBlocks(b *Block, priv ed25519.PrivateKey, pub ed25519.PublicKey) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
+	// recompute and set hash to be sure block canonical fields match
 	h, err := b.ComputeHash()
-	if err  != nil {
-		return fmt.Errorf("cannot recompute hash: %w", err)
-	}
-	b.Hash =h 
-
-	canon, err := b.canonicalData()
 	if err != nil {
-		return fmt.Errorf("cannot get canonical data : %w",err)
+		return fmt.Errorf("cannot recompute block hash: %w", err)
 	}
-	b.Signature = security.SignData(privkey, canon)
-	b.PubKey = hex.EncodeToString(pubKey)
+	b.Hash = h
 
-
-	//basic link check
-	if len(l.blocks) > 0 && b.PrevHash != l.blocks[len(l.blocks)-1].Hash {
-		return fmt.Errorf("prevHash mismatch: want %s , got %s ", l.blocks[len(l.blocks)-1].Hash, b.PrevHash)
+	// prevHash check
+	if len(l.Blocks) > 0 {
+		last := l.Blocks[len(l.Blocks)-1]
+		if b.PrevHash != last.Hash {
+			return fmt.Errorf("prevHash mismatch: expected %s, got %s", last.Hash, b.PrevHash)
+		}
 	}
 
-	// append to file 
-	f , err := os.OpenFile(l.Path, os.O_APPEND|os.O_WRONLY, 0644)
+	// Sign the block hash with server private key and set pubkey
+	if len(priv) == 0 {
+		return fmt.Errorf("private key is empty, cannot sign block")
+	}
+	sig := ed25519.Sign(priv, []byte(b.Hash))
+	b.Signature = hex.EncodeToString(sig)
+	b.PubKey = hex.EncodeToString(pub)
+
+	// Append to file (create if missing)
+	f, err := os.OpenFile(l.path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err != nil {
-		return err
+		return fmt.Errorf("open ledger file: %w", err)
 	}
 	defer f.Close()
 
-	line, err := json.Marshal(b)
-	if err != nil {
-		return err
+	enc := json.NewEncoder(f)
+	if err := enc.Encode(b); err != nil {
+		return fmt.Errorf("write ledger file: %w", err)
 	}
-	if _, err := f.Write(append(line,'\n')); err!= nil {
-		return err
-	}
-	 l.blocks = append(l.blocks ,b)
-	 return nil
+
+	// Push into memory
+	l.Blocks = append(l.Blocks, b)
+	return nil
 }
 
-// Blocks (read-only copy)
-func (l *Ledger) Blocks() []*Block {
+// NextIndex returns the next block index (not locking for heavy concurrency)
+func (l *Ledger) NextIndex() int {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-
-	out := make([]*Block, 0, len(l.blocks))
-
-    for _, b:= range l.blocks {
-        out = append(out, b) // append pointer, not value
-    }
-	return out
+	return len(l.Blocks)
 }
 
+// LastHash returns the last block hash (or empty if none)
+func (l *Ledger) LastHash() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if len(l.Blocks) == 0 {
+		return ""
+	}
+	return l.Blocks[len(l.Blocks)-1].Hash
+}

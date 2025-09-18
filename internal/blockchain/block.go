@@ -11,32 +11,32 @@ import (
 // Block is a tamper-evident record for one pipeline step
 type Block struct {
 	Index     int    `json:"index"`
-	Timestamp string `json:"timestamp"` // RFC3339
+	Timestamp string `json:"timestamp"`
 	Stage     string `json:"stage"`
 	Step      string `json:"step"`
 	LogPath   string `json:"logPath"`
-	LogHash   string `json:"logHash"`  // sha256 of the log file content
-	PrevHash  string `json:"prevHash"` // hash of previous block
-	Hash      string `json:"hash"`     // sha256 over the block's canconial data
+	LogHash   string `json:"logHash"`
+	PrevHash  string `json:"prevHash"`
+	Hash      string `json:"hash"`
 	AgentID   string `json:"agentId"`
 	Signature string `json:"signature"`
 	PubKey    string `json:"pubKey"`
 }
 
-// canconical Data return the JSON used to compute the blockchain hash(excluding hash field)
+// canonicalData returns the JSON bytes used to compute the block hash.
+// It intentionally excludes Hash, Signature and PubKey.
 func (b *Block) canonicalData() ([]byte, error) {
-
-	type hashView struct {
-		Index     int    `json:"index"`
+	// Use a stable view for hashing
+	view := struct {
+		Index    int    `json:"index"`
 		Timestamp string `json:"timestamp"`
-		Stage     string `json:"stage"`
-		Step      string `json:"step"`
-		LogPath   string `json:"logPath"`
-		LogHash   string `json:"logHash"`
-		PrevHash  string `json:"Prevhash"`
-		AgentID   string `json:"agentId,omitempty"`
-	}
-	return json.Marshal(hashView{
+		Stage    string `json:"stage"`
+		Step     string `json:"step"`
+		LogPath  string `json:"logPath"`
+		LogHash  string `json:"logHash"`
+		PrevHash string `json:"prevHash"`
+		AgentID  string `json:"agentId"`
+	}{
 		Index:     b.Index,
 		Timestamp: b.Timestamp,
 		Stage:     b.Stage,
@@ -45,10 +45,11 @@ func (b *Block) canonicalData() ([]byte, error) {
 		LogHash:   b.LogHash,
 		PrevHash:  b.PrevHash,
 		AgentID:   b.AgentID,
-	})
+	}
+	return json.Marshal(view)
 }
 
-// Compute hash calculates SHA256 over canconical data
+// ComputeHash calculates SHA256 over canonicalData
 func (b *Block) ComputeHash() (string, error) {
 	data, err := b.canonicalData()
 	if err != nil {
@@ -58,8 +59,8 @@ func (b *Block) ComputeHash() (string, error) {
 	return hex.EncodeToString(sum[:]), nil
 }
 
-// NewBlock constructs a block and seals it with a hash
-func NewBlock(index int, stage, step, logPath, logHash, prevHash, agentID string)( *Block , error) {
+// NewBlock constructs a block and computes its hash (no signature yet)
+func NewBlock(index int, stage, step, logPath, logHash, prevHash, agentID string) (*Block, error) {
 	blk := &Block{
 		Index:     index,
 		Timestamp: time.Now().UTC().Format(time.RFC3339),
@@ -70,9 +71,10 @@ func NewBlock(index int, stage, step, logPath, logHash, prevHash, agentID string
 		PrevHash:  prevHash,
 		AgentID:   agentID,
 	}
+
 	h, err := blk.ComputeHash()
 	if err != nil {
-		return nil, fmt.Errorf("compute  block hash: %w", err)
+		return nil, fmt.Errorf("compute block hash: %w", err)
 	}
 	blk.Hash = h
 	return blk, nil
