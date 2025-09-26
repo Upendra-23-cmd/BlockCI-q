@@ -1,3 +1,4 @@
 configs/agent.yaml
 logs/
 keys/
+ledger.json/
