@@ -28,18 +28,13 @@ type Job struct {
 	PipelineID string `json:"pipelineId"`
 }
 
-type PipelineStatus struct {
-	Global string            `json:"global"` // pending, running, done, failed
-	Steps  map[string]string `json:"steps"`  // stepKey -> status
-}
-
 type Server struct {
 	mu        sync.Mutex
 	ledger    *blockchain.Ledger
 	pipelines map[string]*core.Pipeline
-	status    map[string]*PipelineStatus // pipelineID -> PipelineStatus
+	status    map[string]map[string]string // pipelineID -> step -> status
 	agents    map[string]Agent
-	jobQueues map[string][]Job           // pipelineID -> job queue
+	jobs      []Job
 	privKey   ed25519.PrivateKey
 	pubKey    ed25519.PublicKey
 }
@@ -60,9 +55,9 @@ func NewServer() *Server {
 	return &Server{
 		ledger:    ledger,
 		pipelines: make(map[string]*core.Pipeline),
-		status:    make(map[string]*PipelineStatus),
+		status:    make(map[string]map[string]string),
 		agents:    make(map[string]Agent),
-		jobQueues: make(map[string][]Job),
+		jobs:      make([]Job, 0),
 		privKey:   priv,
 		pubKey:    pub,
 	}
@@ -109,12 +104,7 @@ func (s *Server) handleSubmitPipeline(w http.ResponseWriter, r *http.Request) {
 
 	s.mu.Lock()
 	s.pipelines[id] = pipeline
-	s.jobQueues[id] = make([]Job, 0)
-
-	status := &PipelineStatus{
-		Global: "pending",
-		Steps:  make(map[string]string),
-	}
+	s.status[id] = make(map[string]string)
 
 	// flatten pipeline → jobs
 	jobCount := 0
@@ -128,12 +118,11 @@ func (s *Server) handleSubmitPipeline(w http.ResponseWriter, r *http.Request) {
 				Cmd:        step.Run,
 				PipelineID: id,
 			}
-			s.jobQueues[id] = append(s.jobQueues[id], job)
-			status.Steps[fmt.Sprintf("%s:%s", stage.Name, step.Name)] = "pending"
+			s.jobs = append(s.jobs, job)
+			s.status[id][fmt.Sprintf("%s:%s", stage.Name, step.Name)] = "pending"
 			jobCount++
 		}
 	}
-	s.status[id] = status
 	s.mu.Unlock()
 
 	w.Header().Set("Content-Type", "application/json")
@@ -196,26 +185,19 @@ func (s *Server) handleNextJob(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	for pid, queue := range s.jobQueues {
-		if len(queue) > 0 {
-			job := queue[0]
-			s.jobQueues[pid] = queue[1:] // dequeue
-
-			// update step → running
-			s.status[pid].Steps[fmt.Sprintf("%s:%s", job.Stage, job.Step)] = "running"
-			// update global → running
-			if s.status[pid].Global == "pending" {
-				s.status[pid].Global = "running"
-			}
-
-			fmt.Printf("📤 Sending job %s (pipeline %s) to agent %s\n", job.ID, pid, agentID)
-
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(job)
-			return
-		}
+	if len(s.jobs) == 0 {
+		w.WriteHeader(http.StatusNoContent)
+		return
 	}
-	w.WriteHeader(http.StatusNoContent)
+
+	job := s.jobs[0]
+	s.jobs = s.jobs[1:]
+
+	fmt.Printf("📤 Dispatching job %s (%s:%s) from pipeline %s → agent %s\n",
+		job.ID, job.Stage, job.Step, job.PipelineID, agentID)
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(job)
 }
 
 //========================= JOB RESULTS ===============================//
@@ -228,7 +210,8 @@ func (s *Server) handleJobResult(w http.ResponseWriter, r *http.Request) {
 	}
 	defer r.Body.Close()
 
-	fmt.Println("📩 Job result received:", result)
+	fmt.Printf("📩 Job result received from agent %s for job %s (pipeline %s)\n",
+		result["agentID"], result["id"], result["pipelineId"])
 
 	idx := s.ledger.NextIndex()
 	prev := s.ledger.LastHash()
@@ -253,22 +236,8 @@ func (s *Server) handleJobResult(w http.ResponseWriter, r *http.Request) {
 
 	// update pipeline status
 	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	stepKey := fmt.Sprintf("%s:%s", stage, step)
-	s.status[pipelineID].Steps[stepKey] = "done"
-
-	// recompute global pipeline status
-	allDone := true
-	for _, st := range s.status[pipelineID].Steps {
-		if st == "pending" || st == "running" {
-			allDone = false
-			break
-		}
-	}
-	if allDone {
-		s.status[pipelineID].Global = "done"
-	}
+	s.status[pipelineID][fmt.Sprintf("%s:%s", stage, step)] = "done"
+	s.mu.Unlock()
 
 	resp := map[string]string{
 		"status": "recorded",
