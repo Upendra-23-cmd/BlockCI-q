@@ -28,15 +28,25 @@ type Job struct {
 	PipelineID string `json:"pipelineId"`
 }
 
+type StepStatus struct {
+	Status string `json:"status"`
+	Agent  string `json:"agent"`
+}
+
 type Server struct {
-	mu        sync.Mutex
-	ledger    *blockchain.Ledger
-	pipelines map[string]*core.Pipeline
-	status    map[string]map[string]string // pipelineID -> step -> status
-	agents    map[string]Agent
-	jobs      []Job
-	privKey   ed25519.PrivateKey
-	pubKey    ed25519.PublicKey
+	mu             sync.Mutex
+	ledger         *blockchain.Ledger
+	pipelines      map[string]*core.Pipeline
+	status         map[string]map[string]StepStatus // pipelineID -> stepKey -> StepStatus
+	pipelineGlobal map[string]string                // pipelineID -> overall status
+	agents         map[string]Agent
+	agentBusy      map[string]bool
+	assignedJobs   map[string]string // jobID -> agentID
+	jobs           []Job
+	roundRobinIdx  int
+
+	privKey ed25519.PrivateKey
+	pubKey  ed25519.PublicKey
 }
 
 //========================= INIT ===============================//
@@ -53,13 +63,17 @@ func NewServer() *Server {
 	}
 
 	return &Server{
-		ledger:    ledger,
-		pipelines: make(map[string]*core.Pipeline),
-		status:    make(map[string]map[string]string),
-		agents:    make(map[string]Agent),
-		jobs:      make([]Job, 0),
-		privKey:   priv,
-		pubKey:    pub,
+		ledger:         ledger,
+		pipelines:      make(map[string]*core.Pipeline),
+		status:         make(map[string]map[string]StepStatus),
+		pipelineGlobal: make(map[string]string),
+		agents:         make(map[string]Agent),
+		agentBusy:      make(map[string]bool),
+		assignedJobs:   make(map[string]string),
+		jobs:           make([]Job, 0),
+		roundRobinIdx:  0,
+		privKey:        priv,
+		pubKey:         pub,
 	}
 }
 
@@ -104,9 +118,9 @@ func (s *Server) handleSubmitPipeline(w http.ResponseWriter, r *http.Request) {
 
 	s.mu.Lock()
 	s.pipelines[id] = pipeline
-	s.status[id] = make(map[string]string)
+	s.status[id] = make(map[string]StepStatus)
+	s.pipelineGlobal[id] = "pending"
 
-	// flatten pipeline → jobs
 	jobCount := 0
 	for _, stage := range pipeline.Stages {
 		for _, step := range stage.Steps {
@@ -119,7 +133,8 @@ func (s *Server) handleSubmitPipeline(w http.ResponseWriter, r *http.Request) {
 				PipelineID: id,
 			}
 			s.jobs = append(s.jobs, job)
-			s.status[id][fmt.Sprintf("%s:%s", stage.Name, step.Name)] = "pending"
+			stepKey := fmt.Sprintf("%s:%s", stage.Name, step.Name)
+			s.status[id][stepKey] = StepStatus{Status: "pending", Agent: ""}
 			jobCount++
 		}
 	}
@@ -143,7 +158,12 @@ func (s *Server) handleGetPipelineStatus(w http.ResponseWriter, r *http.Request)
 		http.Error(w, "pipeline not found", http.StatusNotFound)
 		return
 	}
-	json.NewEncoder(w).Encode(status)
+
+	resp := map[string]interface{}{
+		"pipelineStatus": s.pipelineGlobal[id],
+		"steps":          status,
+	}
+	json.NewEncoder(w).Encode(resp)
 }
 
 //========================= LEDGER ===============================//
@@ -185,7 +205,29 @@ func (s *Server) handleNextJob(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if _, ok := s.agents[agentID]; !ok {
+		http.Error(w, "agent not registered", http.StatusNotFound)
+		return
+	}
+
+	if s.agentBusy[agentID] {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
 	if len(s.jobs) == 0 {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
+	// Round Robin Agent selection
+	agentIDs := make([]string, 0, len(s.agents))
+	for id := range s.agents {
+		agentIDs = append(agentIDs, id)
+	}
+	expectedAgent := agentIDs[s.roundRobinIdx%len(agentIDs)]
+
+	if agentID != expectedAgent {
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
@@ -193,8 +235,18 @@ func (s *Server) handleNextJob(w http.ResponseWriter, r *http.Request) {
 	job := s.jobs[0]
 	s.jobs = s.jobs[1:]
 
-	fmt.Printf("📤 Dispatching job %s (%s:%s) from pipeline %s → agent %s\n",
-		job.ID, job.Stage, job.Step, job.PipelineID, agentID)
+	s.assignedJobs[job.ID] = agentID
+	s.agentBusy[agentID] = true
+
+	stepKey := fmt.Sprintf("%s:%s", job.Stage, job.Step)
+	if _, ok := s.status[job.PipelineID]; ok {
+		s.status[job.PipelineID][stepKey] = StepStatus{Status: "running", Agent: agentID}
+		s.pipelineGlobal[job.PipelineID] = "running"
+	}
+
+	fmt.Printf("📤 RoundRobin → Job %s (pipeline %s) → agent %s\n", job.ID, job.PipelineID, agentID)
+
+	s.roundRobinIdx++
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(job)
@@ -210,8 +262,7 @@ func (s *Server) handleJobResult(w http.ResponseWriter, r *http.Request) {
 	}
 	defer r.Body.Close()
 
-	fmt.Printf("📩 Job result received from agent %s for job %s (pipeline %s)\n",
-		result["agentID"], result["id"], result["pipelineId"])
+	fmt.Println("📩 Job result received:", result)
 
 	idx := s.ledger.NextIndex()
 	prev := s.ledger.LastHash()
@@ -234,9 +285,25 @@ func (s *Server) handleJobResult(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// update pipeline status
+	// update step + free agent
 	s.mu.Lock()
-	s.status[pipelineID][fmt.Sprintf("%s:%s", stage, step)] = "done"
+	stepKey := fmt.Sprintf("%s:%s", stage, step)
+	if _, ok := s.status[pipelineID]; ok {
+		s.status[pipelineID][stepKey] = StepStatus{Status: "done", Agent: agent}
+	}
+	s.agentBusy[agent] = false
+
+	// update global pipeline status
+	allDone := true
+	for _, st := range s.status[pipelineID] {
+		if st.Status != "done" {
+			allDone = false
+			break
+		}
+	}
+	if allDone {
+		s.pipelineGlobal[pipelineID] = "done"
+	}
 	s.mu.Unlock()
 
 	resp := map[string]string{

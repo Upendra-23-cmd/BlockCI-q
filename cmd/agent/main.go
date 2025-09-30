@@ -10,8 +10,8 @@ import (
 	"net/http"
 	"os"
 	"time"
-	"github.com/google/uuid"
 
+	"github.com/google/uuid"
 )
 
 type Agent struct {
@@ -30,10 +30,9 @@ type Job struct {
 func main() {
 	serverURL := "http://localhost:8080"
 
-	// ✅ Dynamic Agent ID (via ENV or auto-generated)
 	agentID := os.Getenv("AGENT_ID")
 	if agentID == "" {
-		agentID = fmt.Sprintf("agent-%s", uuid.New().String()[:8]) // short UUID
+		agentID = fmt.Sprintf("agent-%s", uuid.New().String()[:8])
 	}
 
 	runner := core.NewRunner()
@@ -47,7 +46,6 @@ func main() {
 	pollJobs(serverURL, agentID, runner)
 }
 
-// registerAgent registers the agent with the server
 func registerAgent(serverURL, id string) error {
 	agent := Agent{ID: id, Host: "localhost"}
 	data, _ := json.Marshal(agent)
@@ -63,12 +61,10 @@ func registerAgent(serverURL, id string) error {
 		return fmt.Errorf("register failed: %s", string(body))
 	}
 
-	fmt.Println("🤝 Agent registered with server:", id)
+	fmt.Println("🤝 Agent registered:", id)
 	return nil
 }
 
-
-// pollJobs keeps polling the server for new jobs
 func pollJobs(serverURL, id string, runner *core.Runner) {
 	for {
 		url := fmt.Sprintf("%s/agents/%s/jobs/next", serverURL, id)
@@ -104,17 +100,13 @@ func pollJobs(serverURL, id string, runner *core.Runner) {
 
 		fmt.Printf("📥 Received job: %s (cmd=%s, pipeline=%s)\n", job.ID, job.Cmd, job.PipelineID)
 
-		// run job
 		output, success, logPath, logHash := runJob(job, id, runner)
 
-		// report result
 		reportResult(serverURL, job, id, output, success, logPath, logHash)
 	}
 }
 
-// runJob executes the job with the runner
 func runJob(job Job, agentID string, runner *core.Runner) (string, bool, string, string) {
-	// build pipeline for this job
 	pipeline := &core.Pipeline{
 		Agent: agentID,
 		Stages: []core.Stage{
@@ -127,23 +119,20 @@ func runJob(job Job, agentID string, runner *core.Runner) (string, bool, string,
 		},
 	}
 
+	// Assume runner.RunPipeline returns map[string]string (stepCmd->logPath) and error
 	results, err := runner.RunPipeline(pipeline)
 	if err != nil {
 		return fmt.Sprintf("job %s failed: %v", job.ID, err), false, "", ""
 	}
 
-	// pick logPath
 	var logPath string
 	for _, lp := range results {
 		logPath = lp
 		break
 	}
-
-	// compute log hash
 	logHash := ""
 	if logPath != "" {
-		h, err := utils.HashFile(logPath)
-		if err == nil {
+		if h, err := utils.HashFile(logPath); err == nil {
 			logHash = h
 		}
 	}
@@ -151,7 +140,6 @@ func runJob(job Job, agentID string, runner *core.Runner) (string, bool, string,
 	return fmt.Sprintf("job %s completed successfully", job.ID), true, logPath, logHash
 }
 
-// reportResult sends job results back to server
 func reportResult(serverURL string, job Job, agentID string, output string, success bool, logPath, logHash string) {
 	result := map[string]interface{}{
 		"id":         job.ID,
